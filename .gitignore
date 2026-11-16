@@ -5,3 +5,4 @@ geoip.tsv
 geoip.mmdb
 access-*.log
 deps/
+safe-arm-android

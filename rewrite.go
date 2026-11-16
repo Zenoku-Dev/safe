@@ -46,10 +46,23 @@ func rewriteOne(base *url.URL, raw string) string {
 	abs := base.ResolveReference(ref)
 	switch abs.Scheme {
 	case "http", "https":
+		// Cloudflare-инфраструктура Turnstile работает напрямую из браузера
+		// пользователя (настоящий TLS-фингерпринт) — через прокси CF её отклоняет.
+		if isChallengeHost(abs.Hostname()) {
+			return abs.String()
+		}
 		return "/go/" + abs.String()
 	default:
 		return raw
 	}
+}
+
+
+// isChallengeHost — без регистрации для Cloudflare challenge/Turnstile (вызовы
+// из браузера пользователя, а не через прокси).
+func isChallengeHost(h string) bool {
+	h = strings.ToLower(strings.TrimSuffix(h, "."))
+	return h == "challenges.cloudflare.com" || strings.HasSuffix(h, ".challenges.cloudflare.com")
 }
 
 var (
@@ -108,6 +121,9 @@ func rewriteHTML(base *url.URL, doc []byte) []byte {
 		return doc
 	}
 	prefix := proxyPrefix(base)
+
+		shimEnabled := getenvDefault("SAFE_SHIM", "1") != "0"
+	baseEnabled := getenvDefault("SAFE_BASE", "1") != "0"
 
 	// <base> href = префикс + «каталог» текущей страницы
 	dir := base.Path
@@ -203,18 +219,21 @@ func rewriteHTML(base *url.URL, doc []byte) []byte {
 		return nil
 	}
 	if head := findHead(root); head != nil {
-		baseNode, err := html.ParseFragment(strings.NewReader(`<base href="`+baseHref+`">`), head)
-		shimNode, err2 := html.ParseFragment(strings.NewReader(jsShim), head)
-		if err == nil && err2 == nil {
-			inject := func(nodes []*html.Node) {
-				for i, sn := range nodes {
-					head.InsertBefore(sn, head.FirstChild)
-					_ = i
-				}
+		inject := func(fragment string) bool {
+			nodes, err := html.ParseFragment(strings.NewReader(fragment), head)
+			if err != nil {
+				return false
 			}
-			// сначала шим, потом base — чтобы base оказался самым первым
-			inject(shimNode)
-			inject(baseNode)
+			for _, sn := range nodes {
+				head.InsertBefore(sn, head.FirstChild)
+			}
+			return true
+		}
+		if shimEnabled {
+			inject(jsShim)
+		}
+		if baseEnabled {
+			inject(`<base href="` + baseHref + `">`)
 		}
 	}
 

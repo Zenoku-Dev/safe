@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -82,11 +83,28 @@ func parseTarget(raw string) (*url.URL, error) {
 // ---------- клиент для исходящих запросов ----------
 
 func buildClient() *http.Client {
+	// Параметры TLS максимально близкие к Chrome (JA3): иначе CF Turnstile
+	// считает клиента ботом и отклоняет его proof даже при корректном VM.
+	chromeSuites := []uint16{
+		tls.TLS_AES_128_GCM_SHA256, tls.TLS_CHACHA20_POLY1305_SHA256, tls.TLS_AES_256_GCM_SHA384,
+		tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256, tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+		tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384, tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+		tls.TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA, tls.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
+		tls.TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA, tls.TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA,
+		tls.TLS_RSA_WITH_AES_128_GCM_SHA256, tls.TLS_RSA_WITH_AES_256_GCM_SHA384,
+		tls.TLS_RSA_WITH_AES_128_CBC_SHA, tls.TLS_RSA_WITH_AES_256_CBC_SHA,
+	}
 	tr := &http.Transport{
 		DisableCompression:    true,
 		ResponseHeaderTimeout: 20 * time.Second,
 		MaxIdleConns:          64,
 		IdleConnTimeout:       90 * time.Second,
+		ForceAttemptHTTP2:     true,
+		TLSClientConfig: &tls.Config{
+			MinVersion:       tls.VersionTLS12,
+			CipherSuites:     chromeSuites,
+			CurvePreferences: []tls.CurveID{tls.X25519, tls.CurveP256, tls.CurveP384},
+		},
 	}
 	if proxyURL != "" {
 		u, err := url.Parse(proxyURL)
@@ -316,8 +334,10 @@ func proxyTo(w http.ResponseWriter, r *http.Request, target string) {
 	rewriteSetCookies(resp.Header)
 	// cookie safe_target — схема+хост текущей цели для catch-all fallback'а
 	// (корневые-относительные пути, когда Referer уже ушёл с /go/).
-	resp.Header["Set-Cookie"] = append(resp.Header["Set-Cookie"],
-		"safe_target="+url.QueryEscape(up.Scheme+"://"+up.Host)+"; Path=/; HttpOnly; Secure; SameSite=Lax")
+	if getenvDefault("SAFE_TARGET_COOKIE", "1") != "0" {
+		resp.Header["Set-Cookie"] = append(resp.Header["Set-Cookie"],
+			"safe_target="+url.QueryEscape(up.Scheme+"://"+up.Host)+"; Path=/; HttpOnly; Secure; SameSite=Lax")
+	}
 
 	for k, vs := range resp.Header {
 		for _, v := range vs {

@@ -1,2 +1,6 @@
 safe-dev
 safe-linux-arm
+geoip.bin
+geoip.tsv
+geoip.mmdb
+access-*.log

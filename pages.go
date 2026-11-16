@@ -15,7 +15,6 @@ const faviconSVG = `data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'
 
 const pageHead = `<!doctype html><html lang="ru"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="referrer" content="no-referrer">
 <meta name="theme-color" content="#0a0a0a">
 <link rel="icon" href="` + faviconSVG + `">
 <title>SAFE — сайт на http, открыт по https</title>
@@ -77,7 +76,7 @@ const landingPage = pageHead + `<main><div class="wrap">
   <button type="submit">Открыть</button>
 </form>
 <p class="err" id="e"></p>
-<p class="note">Проксируются <code>http://</code> и <code>https://</code> (80/443) с публичных доменов. Редиректы ходим сервером, куки целей живут на этом домене — не вводите здесь пароли от важных аккаунтов. WebSocket не проксируется.</p>
+<p class="note">Проксируются <code>http://</code> и <code>https://</code> (80/443) с публичных доменов. Редиректы ходим сервером, куки целей живут на этом домене — не вводите здесь пароли от важных аккаунтов. WebSocket не проксируется.<br>Доступ логируется (IP, запрошенный адрес, UA) и хранится 3 дня, затем удаляется.</p>
 </div></main>
 <script>
 var f=document.getElementById('f'),u=document.getElementById('u'),e=document.getElementById('e');

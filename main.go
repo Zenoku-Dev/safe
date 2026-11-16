@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"log"
 	"net"
@@ -83,10 +84,10 @@ func parseTarget(raw string) (*url.URL, error) {
 
 func buildClient() *http.Client {
 	tr := &http.Transport{
-		DisableCompression: true,
+		DisableCompression:    true,
 		ResponseHeaderTimeout: 20 * time.Second,
-		MaxIdleConns:        64,
-		IdleConnTimeout:     90 * time.Second,
+		MaxIdleConns:          64,
+		IdleConnTimeout:       90 * time.Second,
 	}
 	if proxyURL != "" {
 		u, err := url.Parse(proxyURL)
@@ -169,6 +170,29 @@ func rewriteSetCookies(h http.Header) {
 }
 
 // ---------- основной обработчик /go/ ----------
+
+// targetBaseFromReferer извлекает "scheme://host" цели из Referer вида
+// /go/<http|https://host>[:port]/путь. Строго через parseTarget — тот же
+// вайтлист публичных хостов и портов.
+func targetBaseFromReferer(ref string) (string, bool) {
+	if ref == "" {
+		return "", false
+	}
+	u, err := url.Parse(ref)
+	if err != nil {
+		return "", false
+	}
+	p := u.Path
+	if !strings.HasPrefix(p, "/go/") {
+		return "", false
+	}
+	rest := strings.TrimPrefix(p, "/go/")
+	t, err := parseTarget(rest)
+	if err != nil {
+		return "", false
+	}
+	return t.Scheme + "://" + t.Host, true
+}
 
 func handleProxy(w http.ResponseWriter, r *http.Request) {
 	target := strings.TrimPrefix(r.URL.Path, "/go/")
@@ -277,6 +301,10 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 
 func main() {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		sr := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		defer logRequest(sr, r, start)
+		w = sr
 		p := r.URL.Path
 		switch {
 		case p == "/healthz":
@@ -288,6 +316,21 @@ func main() {
 		case p == "/":
 			serveLanding(w, r)
 		default:
+			// Корневые-относительные пути из JS/Inline-скриптов страниц,
+			// отданных через /go/<цель> (например /cdn-cgi/challenge-platform… у Cloudflare).
+			// Referer указывает на /go/<цель>/… — адресуем путь туда же.
+			if base, ok := targetBaseFromReferer(r.Header.Get("Referer")); ok {
+				log.Printf("fallback: referer=%q base=%q path=%q", r.Header.Get("Referer"), base, p)
+				q := ""
+				if r.URL.RawQuery != "" {
+					q = "?" + r.URL.RawQuery
+				}
+				loc := "/go/" + base + p + q
+				w.Header().Set("Location", loc)
+				w.WriteHeader(http.StatusTemporaryRedirect)
+				fmt.Fprintf(w, `<a href="%s">Redirecting to %s</a>`, html.EscapeString(loc), html.EscapeString(loc))
+				return
+			}
 			http.NotFound(w, r)
 		}
 	})

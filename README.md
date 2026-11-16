@@ -53,10 +53,31 @@ TLS: `proxy_hosts["safe.rival-afk.com"] = "http://127.0.0.1:18003"` в `/etc/riv
 (бэкап `auth.json.bak-*`, рестарт `systemctl restart rival-auth`, сертификат ACME автоматически,
 нужен A-запись в Cloudflare → 46.183.21.121, DNS-only).
 
+### Журнал доступа (2026-11)
+
+Каждое подключение логируется одной JSON-строкой в `~/safe/access-YYYY-MM-DD.log`
+на redmi (chmod 600, каталог `SAFE_LOG_DIR`, по умолчанию `~/safe`):
+
+```json
+{"ts":"2026-11-16T07:12:00Z","ip":"203.0.113.7","geo":"SE","method":"GET",
+ "path":"/go/http://example.com/","target":"example.com","status":200,
+ "bytes":1523,"dur_ms":812,"proto":"HTTP/2.0","ua":"Mozilla/5.0 ...","ref":"..."}
+```
+
+- IP — последний хоп `X-Forwarded-For` (его дописывает rival-auth при проксировании;
+  первые хопы могут быть подделаны клиентом).
+- Geo — локальная база DB-IP Lite "Country" (CC BY 4.0), `geoip.bin` (~24 МБ,
+  собирается из `dbip-country.mmdb` через `sapics/ip-location-db` любым
+  MMDB-парсером; в репо не коммитится).
+- **Хранение 3 дня**: файл на дату; старше трёх дней удаляются при записи.
+- Тела запросов/ответов не логируются.
+- На странице — уведомление о логировании (в блоке note).
+
 ## Проверка
 
 ```sh
 rsh phone 'curl -s http://127.0.0.1:8001/healthz'     # ok
+rsh phone 'ls -la ~/safe/access-*.log && tail -3 ~/safe/access-*.log'   # журнал
 rsh vps  'curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:18003/'
 curl -s -o /dev/null -w "%{http_code}\n" https://safe.rival-afk.com/
 ```

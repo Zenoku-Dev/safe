@@ -78,13 +78,13 @@ func rewriteCSS(base *url.URL, css string) string {
 // атрибуты, которые переписываем: тег -> список атрибутов
 var attrRules = map[string][]string{
 	"a": {"href"}, "area": {"href"},
-	"link": {"href"},
+	"link":   {"href"},
 	"script": {"src"},
-	"img": {"src", "srcset"}, "input": {"src"},
+	"img":    {"src", "srcset"}, "input": {"src"},
 	"source": {"src", "srcset"}, "track": {"src"},
 	"iframe": {"src"}, "frame": {"src"},
 	"embed": {"src"}, "object": {"data"},
-	"form": {"action"},
+	"form":  {"action"},
 	"video": {"src", "poster"}, "audio": {"src"},
 	"blockquote": {"cite"}, "q": {"cite"}, "del": {"cite"}, "ins": {"cite"},
 	"body": {"background"}, "table": {"background"}, "td": {"background"}, "th": {"background"},

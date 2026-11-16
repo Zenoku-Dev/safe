@@ -5,7 +5,6 @@ package main
 
 import (
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -16,9 +15,12 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/net/proxy"
+
+	utls "github.com/refraction-networking/utls"
 )
 
 var (
@@ -83,54 +85,74 @@ func parseTarget(raw string) (*url.URL, error) {
 // ---------- клиент для исходящих запросов ----------
 
 func buildClient() *http.Client {
-	// Параметры TLS максимально близкие к Chrome (JA3): иначе CF Turnstile
-	// считает клиента ботом и отклоняет его proof даже при корректном VM.
-	chromeSuites := []uint16{
-		tls.TLS_AES_128_GCM_SHA256, tls.TLS_CHACHA20_POLY1305_SHA256, tls.TLS_AES_256_GCM_SHA384,
-		tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256, tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
-		tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384, tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
-		tls.TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA, tls.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
-		tls.TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA, tls.TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA,
-		tls.TLS_RSA_WITH_AES_128_GCM_SHA256, tls.TLS_RSA_WITH_AES_256_GCM_SHA384,
-		tls.TLS_RSA_WITH_AES_128_CBC_SHA, tls.TLS_RSA_WITH_AES_256_CBC_SHA,
+	dialContext := func(ctx context.Context, network, addr string) (net.Conn, error) {
+		var base net.Conn
+		var err error
+		if proxyURL != "" {
+			base, err = socksDial(ctx, network, addr)
+		} else {
+			var d net.Dialer
+			base, err = d.DialContext(ctx, network, addr)
+		}
+		if err != nil {
+			return nil, err
+		}
+		// TLS делаем только для 443 (http:// идёт голым TCP)
+		host, port, splitErr := net.SplitHostPort(addr)
+		if splitErr != nil || port != "443" {
+			return base, nil
+		}
+		// Chrome-отпечаток ClientHello — иначе CF считает нас ботом
+		conn := utls.UClient(base, &utls.Config{
+			ServerName:         host,
+			NextProtos:         []string{"h2", "http/1.1"},
+			InsecureSkipVerify: false,
+		}, utls.HelloChrome_Auto)
+		if err := conn.HandshakeContext(ctx); err != nil {
+			_ = base.Close()
+			return nil, err
+		}
+		return conn, nil
 	}
 	tr := &http.Transport{
 		DisableCompression:    true,
 		ResponseHeaderTimeout: 20 * time.Second,
 		MaxIdleConns:          64,
 		IdleConnTimeout:       90 * time.Second,
-		ForceAttemptHTTP2:     true,
-		TLSClientConfig: &tls.Config{
-			MinVersion:       tls.VersionTLS12,
-			CipherSuites:     chromeSuites,
-			CurvePreferences: []tls.CurveID{tls.X25519, tls.CurveP256, tls.CurveP384},
-		},
+		DialContext:           dialContext,
 	}
-	if proxyURL != "" {
-		u, err := url.Parse(proxyURL)
-		if err != nil {
-			log.Fatalf("SAFE_PROXY: %v", err)
-		}
-		d, err := proxy.FromURL(u, proxy.Direct)
-		if err != nil {
-			log.Fatalf("SAFE_PROXY: %v", err)
-		}
-		cd, ok := d.(proxy.ContextDialer)
-		tr.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
-			if ok {
-				return cd.DialContext(ctx, network, addr)
-			}
-			return d.Dial(network, addr)
-		}
-	} else {
-		tr.Proxy = http.ProxyFromEnvironment
-	}
+	// dialContext уже настроен выше
 	return &http.Client{
 		Transport: tr,
 		Timeout:   httpTimeout,
 		// Редиректы не идём сами — переписываем Location и отдаём браузеру.
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
+}
+
+
+var (
+	socksOnce sync.Once
+	socksD    proxy.Dialer
+	socksErr  error
+)
+
+func socksDial(ctx context.Context, network, addr string) (net.Conn, error) {
+	socksOnce.Do(func() {
+		u, err := url.Parse(proxyURL)
+		if err != nil {
+			socksErr = err
+			return
+		}
+		socksD, socksErr = proxy.FromURL(u, proxy.Direct)
+	})
+	if socksErr != nil {
+		return nil, socksErr
+	}
+	if cd, ok := socksD.(proxy.ContextDialer); ok {
+		return cd.DialContext(ctx, network, addr)
+	}
+	return socksD.Dial(network, addr)
 }
 
 var upstream = buildClient()

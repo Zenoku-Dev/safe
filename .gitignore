@@ -1,8 +1,3 @@
-safe-dev
-safe-linux-arm
-geoip.bin
-geoip.tsv
-geoip.mmdb
-access-*.log
-deps/
-safe-arm-android
+*.log
+.DS_Store
+__pycache__/

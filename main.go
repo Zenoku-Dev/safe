@@ -171,6 +171,29 @@ func rewriteSetCookies(h http.Header) {
 
 // ---------- основной обработчик /go/ ----------
 
+
+// targetBaseFromCookie — та же операция, но целевая схема+хост берутся из cookie
+// safe_target (её выставляет прокси на каждом /go/-ответе).
+// Нужна, когда страница уже «ушла» на корневой путь (CF challenge заменяет URL
+// на /forum/...) и Referer больше не указывает на /go/.
+func targetBaseFromCookie(r *http.Request) (string, bool) {
+	for _, c := range r.Cookies() {
+		if c.Name != "safe_target" {
+			continue
+		}
+		v, err := url.QueryUnescape(c.Value)
+		if err != nil {
+			return "", false
+		}
+		t, err := parseTarget(v + "/")
+		if err != nil {
+			return "", false
+		}
+		return t.Scheme + "://" + t.Host, true
+	}
+	return "", false
+}
+
 // targetBaseFromReferer извлекает "scheme://host" цели из Referer вида
 // /go/<http|https://host>[:port]/путь. Строго через parseTarget — тот же
 // вайтлист публичных хостов и портов.
@@ -288,6 +311,10 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	rewriteSetCookies(resp.Header)
+	// cookie safe_target — схема+хост текущей цели для catch-all fallback'а
+	// (корневые-относительные пути, когда Referer уже ушёл с /go/).
+	resp.Header["Set-Cookie"] = append(resp.Header["Set-Cookie"],
+		"safe_target="+url.QueryEscape(up.Scheme+"://"+up.Host)+"; Path=/; HttpOnly; Secure; SameSite=Lax")
 
 	for k, vs := range resp.Header {
 		for _, v := range vs {
@@ -316,10 +343,15 @@ func main() {
 		case p == "/":
 			serveLanding(w, r)
 		default:
-			// Корневые-относительные пути из JS/Inline-скриптов страниц,
+			// Корневые-относительные пути из JS/inline-скриптов страниц,
 			// отданных через /go/<цель> (например /cdn-cgi/challenge-platform… у Cloudflare).
-			// Referer указывает на /go/<цель>/… — адресуем путь туда же.
-			if base, ok := targetBaseFromReferer(r.Header.Get("Referer")); ok {
+			// Сначала смотрим Referer (/go/<цель>/…), затем — cookie safe_target,
+			// которую браузер всегда носит после первой страницы через /go/.
+			base, ok := targetBaseFromReferer(r.Header.Get("Referer"))
+			if !ok {
+				base, ok = targetBaseFromCookie(r)
+			}
+			if ok {
 				log.Printf("fallback: referer=%q base=%q path=%q", r.Header.Get("Referer"), base, p)
 				q := ""
 				if r.URL.RawQuery != "" {

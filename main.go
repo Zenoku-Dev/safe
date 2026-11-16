@@ -191,6 +191,9 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	copyReqHeaders(req.Header, r.Header)
+	if req.Header.Get("User-Agent") == "" {
+		req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
+	}
 	req.Header.Set("Accept-Encoding", "identity")
 
 	resp, err := upstream.Do(req)

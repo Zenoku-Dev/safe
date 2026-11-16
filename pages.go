@@ -61,12 +61,12 @@ footer .fmark .mark{width:16px;height:16px;color:var(--dim)}
 </style></head><body>
 <header>
   <a class="lockup" href="/">` + markSVG + `<b>SAFE</b></a>
-  <a class="headlink" href="https://zenoku.host">zenoku.host →</a>
+  <a class="headlink" href="https://github.com/Zenoku-Dev/safe">github →</a>
 </header>`
 
 const pageFoot = `<footer>
   <span class="fmark">` + markSVG + ` safe.rival-afk.com</span>
-  <span><a href="https://github.com/Zenoku-Dev/safe">github</a></span>
+  <span>rival-afk.com</span>
 </footer></body></html>`
 
 const landingPage = pageHead + `<main><div class="wrap">

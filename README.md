@@ -16,10 +16,11 @@
                      │
                      ▼
    redmi :127.0.0.1:8001 — это приложение (runit `safe`, бинарник ~/safe/safe)
-                     │  исходящие — через SSH-socks redmi (~/.rsh/tunnel.sh, -D 7780),
-                     │  DNS резолвится на стороне VPS (socks5h)
+                     │  исходящие по умолчанию — напрямую с Wi‑Fi redmi (`SAFE_EXIT=direct`),
+                     │  DNS резолвится через DoH (8.8.8.8/1.1.1.1), TLS/сертификаты
+                     │  проверяются системным CA (`SSL_CERT_FILE=.../etc/tls/cert.pem`)
                      ▼
-   целевой http-сайт (только :80)
+   целевой сайт (http :80 / https :443)
 ```
 
 - Редиректы внутри http/https переписываются в `/go/<цель>` и отдаются браузеру.
@@ -106,3 +107,20 @@ curl -s -o /dev/null -w "%{http_code}\n" https://safe.rival-afk.com/
   (Cloudflare и т.п.) должны решаться в браузере пользователя: все запросы
   идут через один и тот же выходной IP VPS, cookie challenge'а сохраняются на
   safe.rival-afk.com. Гарантии, что конкретная CF-зона пропустит прокси, нет.
+
+### Режим выхода (обновлено 2026-11-16)
+
+По умолчанию (`SAFE_EXIT=direct`) safe выходит напрямую с redmi (Wi‑Fi), а не через
+VPS-socks. Это важно для сайтов, которые Cloudflare проверяет по сетевому пути:
+с резидентского Wi‑Fi rutracker.org открывается (проверено `200`, `111 216` байт),
+с датацентрового IP VPS — managed-challenge.
+
+DNS: системный резолвер redmi для uid u0_a165 сломан, поэтому используется DoH
+`https://8.8.8.8/resolve` / `https://1.1.1.1/dns-query` (SNI: dns.google / cloudflare-dns.com).
+TLS: нужен корректный корневой CA-бандл — в runit `run` выставлен `SSL_CERT_FILE=
+/data/data/com.termux/files/usr/etc/tls/cert.pem`.
+
+Вернуться на VPS-выход: `SAFE_EXIT=socks` + `SAFE_PROXY=socks5h://127.0.0.1:7780`.
+
+Сервис runit: `$PREFIX/var/service/safe/run` — обязательно `SSL_CERT_FILE=...`
+(иначе Go отклоняет сертификаты на redmi).

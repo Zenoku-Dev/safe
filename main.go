@@ -5,6 +5,8 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -26,7 +28,8 @@ import (
 var (
 	addr        = getenv("SAFE_ADDR", "127.0.0.1:8001")
 	proxyURL    = getenv("SAFE_PROXY", "") // напр. socks5h://127.0.0.1:7780 (DNS на стороне прокси)
-	maxBody     = int64(24 << 20)          // 24 MiB — лимит на ответ, который переписываем
+	safeExit    = getenv("SAFE_EXIT", "direct") // direct = выход с этого хоста через DoH; socks = через SAFE_PROXY
+	maxBody     = int64(24 << 20)               // 24 MiB — лимит на ответ, который переписываем
 	maxReqBody  = int64(24 << 20)
 	httpTimeout = 30 * time.Second
 
@@ -84,25 +87,144 @@ func parseTarget(raw string) (*url.URL, error) {
 
 // ---------- клиент для исходящих запросов ----------
 
+type dohAnswer struct {
+	Data string `json:"data"`
+	Type int    `json:"type"`
+}
+
+type dohResp struct {
+	Answer []dohAnswer `json:"Answer"`
+}
+
+var dohHTTP = &http.Client{
+	Timeout: 12 * time.Second,
+	Transport: &http.Transport{
+		TLSClientConfig:       &tls.Config{ServerName: "dns.google"},
+		DisableCompression:    true,
+		ResponseHeaderTimeout: 8 * time.Second,
+	},
+}
+
+func newDOHHTTP(host string) *http.Client {
+	sname := host
+	if host == "1.1.1.1" {
+		sname = "cloudflare-dns.com"
+	} else if host == "8.8.8.8" {
+		sname = "dns.google"
+	}
+	return &http.Client{
+		Timeout: 12 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig:       &tls.Config{ServerName: sname},
+			DisableCompression:    true,
+			ResponseHeaderTimeout: 8 * time.Second,
+		},
+	}
+}
+
+func resolveDoH(ctx context.Context, host string) ([]string, error) {
+	if ip := net.ParseIP(host); ip != nil {
+		return []string{host}, nil
+	}
+	var lastErr error
+	for _, base := range []string{"https://8.8.8.8/resolve", "https://1.1.1.1/dns-query"} {
+		epHTTP := dohHTTP
+		if strings.HasPrefix(base, "https://1.1.1.1") {
+			epHTTP = newDOHHTTP("1.1.1.1")
+		} else if strings.HasPrefix(base, "https://8.8.8.8") {
+			epHTTP = newDOHHTTP("8.8.8.8")
+		}
+		for _, qtype := range []string{"A", "AAAA"} {
+			reqURL := base + "?name=" + url.QueryEscape(host) + "&type=" + qtype
+			req, err := http.NewRequestWithContext(ctx, "GET", reqURL, nil)
+			if err != nil {
+				lastErr = err
+				continue
+			}
+			req.Header.Set("Accept", "application/dns-json")
+			resp, err := epHTTP.Do(req)
+			if err != nil {
+				log.Printf("safe: DoH %s %s: %v", base, qtype, err)
+				lastErr = err
+				continue
+			}
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+			resp.Body.Close()
+			if resp.StatusCode != 200 {
+				log.Printf("safe: DoH %s %s -> %d", base, qtype, resp.StatusCode)
+				lastErr = fmt.Errorf("%d", resp.StatusCode)
+				continue
+			}
+			var dr dohResp
+			if err := json.Unmarshal(body, &dr); err != nil {
+				log.Printf("safe: DoH %s %s decode: %v", base, qtype, err)
+				lastErr = err
+				continue
+			}
+			var ips []string
+			for _, a := range dr.Answer {
+				if a.Type == 1 || a.Type == 28 {
+					ip := strings.TrimSpace(a.Data)
+					if net.ParseIP(ip) != nil {
+						ips = append(ips, ip)
+					}
+				}
+			}
+			if len(ips) > 0 {
+				return ips, nil
+			}
+			lastErr = fmt.Errorf("empty answer")
+		}
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("DoH: no answer")
+	}
+	log.Printf("safe: DoH failed for %s: %v", host, lastErr)
+	return nil, lastErr
+}
+
+func resolveAddr(ctx context.Context, addr string) (string, string, error) {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return "", "", err
+	}
+	if safeExit != "direct" || proxyURL != "" {
+		return host, port, nil
+	}
+	ips, err := resolveDoH(ctx, host)
+	if err != nil || len(ips) == 0 {
+		return host, port, err
+	}
+	return ips[0], port, nil
+}
+
 func buildClient() *http.Client {
 	plainDial := func(ctx context.Context, network, addr string) (net.Conn, error) {
-		if proxyURL != "" {
+		if proxyURL != "" && safeExit == "socks" {
 			return socksDial(ctx, network, addr)
 		}
+		ip, port, err := resolveAddr(ctx, addr)
+		if err != nil || ip == "" {
+			// fallback: try socks if configured, else system dial
+			if proxyURL != "" {
+				return socksDial(ctx, network, addr)
+			}
+			var d net.Dialer
+			return d.DialContext(ctx, network, addr)
+		}
 		var d net.Dialer
-		return d.DialContext(ctx, network, addr)
+		return d.DialContext(ctx, network, net.JoinHostPort(ip, port))
 	}
 	chromeDialTLS := func(ctx context.Context, network, addr string) (net.Conn, error) {
+		host, _, splitErr := net.SplitHostPort(addr)
+		if splitErr != nil {
+			return nil, fmt.Errorf("bad addr %q", addr)
+		}
 		base, err := plainDial(ctx, network, addr)
 		if err != nil {
 			return nil, err
 		}
-		host, port, splitErr := net.SplitHostPort(addr)
-		if splitErr != nil || port != "443" {
-			_ = base.Close()
-			return nil, fmt.Errorf("адрес %q: ожидается host:443", addr)
-		}
-		// Chrome ClientHello, ALPN строго http/1.1 (uTLS parrot форсит h2 — транспорт говорит HTTP/1.1).
+		// Chrome ClientHello, ALPN строго http/1.1.
 		spec, err := utls.UTLSIdToSpec(utls.HelloChrome_Auto)
 		if err != nil {
 			_ = base.Close()
@@ -135,7 +257,6 @@ func buildClient() *http.Client {
 		DialContext:           plainDial,
 		DialTLSContext:        chromeDialTLS,
 	}
-	// dialContext уже настроен выше
 	return &http.Client{
 		Transport: tr,
 		Timeout:   httpTimeout,

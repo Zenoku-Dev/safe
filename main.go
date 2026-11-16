@@ -27,7 +27,7 @@ import (
 
 var (
 	addr        = getenv("SAFE_ADDR", "127.0.0.1:8001")
-	proxyURL    = getenv("SAFE_PROXY", "") // напр. socks5h://127.0.0.1:7780 (DNS на стороне прокси)
+	proxyURL    = getenv("SAFE_PROXY", "")      // напр. socks5h://127.0.0.1:7780 (DNS на стороне прокси)
 	safeExit    = getenv("SAFE_EXIT", "direct") // direct = выход с этого хоста через DoH; socks = через SAFE_PROXY
 	maxBody     = int64(24 << 20)               // 24 MiB — лимит на ответ, который переписываем
 	maxReqBody  = int64(24 << 20)
@@ -265,7 +265,6 @@ func buildClient() *http.Client {
 	}
 }
 
-
 var (
 	socksOnce sync.Once
 	socksD    proxy.Dialer
@@ -347,8 +346,8 @@ func rewriteSetCookies(h http.Header) {
 
 // targetBaseFromCookie — та же операция, но целевая схема+хост берутся из cookie
 // safe_target (её выставляет прокси на каждом /go/-ответе).
-// Нужна, когда страница уже «ушла» на корневой путь (CF challenge заменяет URL
-// на /forum/...) и Referer больше не указывает на /go/.
+// Нужна, когда целевая страница уже «ушла» на корневой путь и
+// Referer больше не указывает на /go/.
 func targetBaseFromCookie(r *http.Request) (string, bool) {
 	for _, c := range r.Cookies() {
 		if c.Name != "safe_target" {
@@ -523,7 +522,7 @@ func main() {
 			serveLanding(w, r)
 		default:
 			// Корневые-относительные пути из JS/inline-скриптов страниц,
-			// отданных через /go/<цель> (например /cdn-cgi/challenge-platform… у Cloudflare).
+			// отданных через /go/<цель> (внешние служебные пути целевого сайта).
 			// Сначала смотрим Referer (/go/<цель>/…), затем — cookie safe_target.
 			// Отдаём контент ЦЕЛИ по тому же пути БЕЗ редиректа — страница-инициатор
 			// ждёт скрипт ровно по /cdn-cgi/… на своём origin.

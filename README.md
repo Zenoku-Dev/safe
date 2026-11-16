@@ -6,7 +6,7 @@
 ## Как устроено
 
 ```
-браузер ──https──> safe.rival-afk.com (Cloudflare/DNS → 46.183.21.121)
+браузер ──https──> safe.rival-afk.com (CDN/DNS → 46.183.21.121)
                      │
                      ▼
    rival-auth :443 (ACME-TLS, /etc/rival/auth.json proxy_hosts)
@@ -49,7 +49,7 @@ rsh phone 'chmod 755 ~/safe/safe && sv restart safe'
 ```
 
 Сервис runit: `$PREFIX/var/service/safe/run` (`exec ~/safe/safe`,
-`SAFE_ADDR=127.0.0.1:8001`, `SAFE_PROXY=socks5h://127.0.0.1:7780`),
+`SAFE_ADDR=127.0.0.1:8001`, заданные в runit-конфиге),
 логи — `svlogd ~/safe/log`.
 
 Туннель: форвард `VPS:127.0.0.1:18003 → redmi:127.0.0.1:8001` в базовой сессии
@@ -57,7 +57,7 @@ rsh phone 'chmod 755 ~/safe/safe && sv restart safe'
 
 TLS: `proxy_hosts["safe.rival-afk.com"] = "http://127.0.0.1:18003"` в `/etc/rival/auth.json`
 (бэкап `auth.json.bak-*`, рестарт `systemctl restart rival-auth`, сертификат ACME автоматически,
-нужен A-запись в Cloudflare → 46.183.21.121, DNS-only).
+нужен A-запись CDN/DNS → 46.183.21.121, DNS-only).
 
 ### Журнал доступа (2026-11)
 
@@ -88,7 +88,7 @@ rsh vps  'curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:18003/'
 curl -s -o /dev/null -w "%{http_code}\n" https://safe.rival-afk.com/
 ```
 
-## Ограничения и безопасность
+## Важно знать
 
 - Это **открытый** прокси: любой, кто знает домен, может ходить через него
   на http/https-сайты (решение сознательное).
@@ -102,21 +102,21 @@ curl -s -o /dev/null -w "%{http_code}\n" https://safe.rival-afk.com/
 - Прокси выставляет cookie `safe_target=<scheme://host>` на каждом /go/-ответе:
   корневые-относительные пути в JS (`/cdn-cgi/...`, `/forum/...`) редиректятся
   в текущую цель (сначала Referer, потом cookie — 307, метод и тело сохраняются).
-- User-Agent браузера пересылается как есть (иначе сайты с bot-detection
-  отдают не контент, а страницу-заглушку). Интерактивные challenge'и
-  (Cloudflare и т.п.) должны решаться в браузере пользователя: все запросы
-  идут через один и тот же выходной IP VPS, cookie challenge'а сохраняются на
-  safe.rival-afk.com. Гарантии, что конкретная CF-зона пропустит прокси, нет.
+- User-Agent браузера пересылается как есть: сайты могут по-разному
+  обрабатывать автоматические запросы. Некоторые страницы требуют проверки или
+  авторизации в браузере и могут не работать через обёртку.
+- Исходящий трафик выходит через redmi (`SAFE_EXIT=direct`) или, при настройке,
+  через отдельный прокси. Сервис не обещает одинаковую доступность для всех
+  сайтов.
 
 ### Режим выхода (обновлено 2026-11-16)
 
 По умолчанию (`SAFE_EXIT=direct`) safe выходит напрямую с redmi (Wi‑Fi), а не через
-VPS-socks. Это важно для сайтов, которые Cloudflare проверяет по сетевому пути:
-с резидентского Wi‑Fi rutracker.org открывается (проверено `200`, `111 216` байт),
-с датацентрового IP VPS — managed-challenge.
+VPS-socks. Доступность отдельных документов зависит от сетевого пути и правил
+целевого сайта.
 
 DNS: системный резолвер redmi для uid u0_a165 сломан, поэтому используется DoH
-`https://8.8.8.8/resolve` / `https://1.1.1.1/dns-query` (SNI: dns.google / cloudflare-dns.com).
+`https://8.8.8.8/resolve` / `https://1.1.1.1/dns-query`.
 TLS: нужен корректный корневой CA-бандл — в runit `run` выставлен `SSL_CERT_FILE=
 /data/data/com.termux/files/usr/etc/tls/cert.pem`.
 

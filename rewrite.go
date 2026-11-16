@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"io"
+	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
@@ -57,13 +58,26 @@ func rewriteOne(base *url.URL, raw string) string {
 	}
 }
 
-
 // isChallengeHost — без регистрации для Cloudflare challenge/Turnstile (вызовы
 // из браузера пользователя, а не через прокси).
 func isChallengeHost(h string) bool {
 	h = strings.ToLower(strings.TrimSuffix(h, "."))
 	return h == "challenges.cloudflare.com" || strings.HasSuffix(h, ".challenges.cloudflare.com")
 }
+
+func findBody(n *html.Node) *html.Node {
+	if n.Type == html.ElementNode && strings.EqualFold(n.Data, "body") {
+		return n
+	}
+	for c := n.FirstChild; c != nil; c = c.NextSibling {
+		if b := findBody(c); b != nil {
+			return b
+		}
+	}
+	return nil
+}
+
+const safeNoteHTML = `<div id="safe-note" style="position:fixed;left:0;right:0;bottom:0;z-index:2147483647;background:#0a0a0a;color:#f2f2f0;border-top:1px solid #26262a;padding:10px 14px;font:13px/1.5 system-ui,sans-serif"><div style="max-width:680px;margin:0 auto;display:flex;gap:12px;align-items:flex-start"><svg viewBox="0 0 100 100" width="18" height="18" style="flex:0 0 auto;margin-top:2px" fill="none"><path d="M78 40.4A29.6 29.6 0 1 1 60.1 22.2" stroke="#f2f2f0" stroke-width="8" stroke-linecap="round"/><rect x="36.5" y="50" width="27" height="18" rx="4.5" stroke="#f2f2f0" stroke-width="5"/><path d="M43.5 50V43a6.5 6.5 0 0 1 13 0V50" stroke="#f2f2f0" stroke-width="5"/></svg><div><div style="font-weight:700;letter-spacing:.02em">SAFE · проверка Cloudflare</div><div style="color:#9a9a96;font-weight:400">Это не ошибка приложения: страница проверки безопасности rutracker.org. Turnstile привязывает проверку к конкретному браузеру, через обёртку она не проходится — открывайте сайт напрямую (например, через VPN).</div></div><button onclick="this.parentNode.parentNode.remove()" aria-label="Скрыть" style="flex:0 0 auto;background:none;border:1px solid #26262a;color:#9a9a96;border-radius:8px;padding:2px 9px;cursor:pointer">✕</button></div></div>`
 
 var (
 	cssURLRe    = regexp.MustCompile(`(?is)url\s*\(\s*([^)]*?)\s*\)`)
@@ -115,14 +129,14 @@ func htmlIsHead(n *html.Node) bool {
 
 // rewriteHTML разбирает документ, переписывает ссылки, выкидывает существующие
 // <base>/<meta CSP>, вставляет свои <base> и JS-шим.
-func rewriteHTML(base *url.URL, doc []byte) []byte {
+func rewriteHTML(base *url.URL, doc []byte, status int) []byte {
 	root, err := html.Parse(bytes.NewReader(doc))
 	if err != nil {
 		return doc
 	}
 	prefix := proxyPrefix(base)
 
-		shimEnabled := getenvDefault("SAFE_SHIM", "1") != "0"
+	shimEnabled := getenvDefault("SAFE_SHIM", "1") != "0"
 	baseEnabled := getenvDefault("SAFE_BASE", "1") != "0"
 
 	// <base> href = префикс + «каталог» текущей страницы
@@ -204,6 +218,19 @@ func rewriteHTML(base *url.URL, doc []byte) []byte {
 		}
 	}
 	walk(root)
+
+	// CF-экран (проверка/блокировка): добавляем подсказку, что это защита сайта,
+	// а не ошибка обёртки — и что Turnstile через прокси не проходит.
+	if status == http.StatusForbidden && bytes.Contains(bytes.ToLower(doc), []byte("cloudflare")) {
+		if body := findBody(root); body != nil {
+			nodes, err := html.ParseFragment(strings.NewReader(safeNoteHTML), body)
+			if err == nil {
+				for _, n := range nodes {
+					body.AppendChild(n)
+				}
+			}
+		}
+	}
 
 	// вставляем <base> и шим в начало <head>
 	var findHead func(*html.Node) *html.Node

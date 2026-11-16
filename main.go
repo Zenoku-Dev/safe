@@ -188,7 +188,6 @@ func rewriteSetCookies(h http.Header) {
 
 // ---------- основной обработчик /go/ ----------
 
-
 // targetBaseFromCookie — та же операция, но целевая схема+хост берутся из cookie
 // safe_target (её выставляет прокси на каждом /go/-ответе).
 // Нужна, когда страница уже «ушла» на корневой путь (CF challenge заменяет URL
@@ -305,7 +304,7 @@ func proxyTo(w http.ResponseWriter, r *http.Request, target string) {
 
 	switch {
 	case isHTML:
-		raw = rewriteHTML(base, raw)
+		raw = rewriteHTML(base, raw, resp.StatusCode)
 	case isCSS:
 		raw = []byte(rewriteCSS(base, string(raw)))
 	case enc != "" && enc != "identity":

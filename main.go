@@ -39,7 +39,7 @@ func getenv(k, def string) string {
 
 // ---------- валидация цели ----------
 
-var errNotHTTP = errors.New("можно проксировать только http:// ссылки")
+var errNotHTTP = errors.New("можно проксировать только http:// и https:// ссылки")
 
 // parseTarget разбирает строку после /go/ и возвращает нормализованный http-URL.
 // Разрешены только http-цели по порту 80 с «человеческим» DNS-именем
@@ -54,7 +54,7 @@ func parseTarget(raw string) (*url.URL, error) {
 		return nil, err
 	}
 	u.Scheme = strings.ToLower(u.Scheme)
-	if u.Scheme != "http" {
+	if u.Scheme != "http" && u.Scheme != "https" {
 		return nil, errNotHTTP
 	}
 	if u.User != nil {
@@ -62,14 +62,17 @@ func parseTarget(raw string) (*url.URL, error) {
 	}
 	host := u.Hostname()
 	port := u.Port()
-	if port != "" && port != "80" {
-		return nil, errors.New("разрешён только порт 80")
+	if u.Scheme == "http" && port != "" && port != "80" {
+		return nil, errors.New("для http разрешён только порт 80")
+	}
+	if u.Scheme == "https" && port != "" && port != "443" {
+		return nil, errors.New("для https разрешён только порт 443")
 	}
 	host = strings.ToLower(host)
 	if host == "localhost" || !hostRe.MatchString(host) {
 		return nil, errors.New("недопустимое имя хоста (нужны обычные публичные домены)")
 	}
-	u.Host = host // без :80
+	u.Host = host // порты по умолчанию не пишем
 	if u.Path == "" {
 		u.Path = "/"
 	}
@@ -243,9 +246,9 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 	if loc := resp.Header.Get("Location"); loc != "" {
 		if ref, perr := url.Parse(loc); perr == nil {
 			abs := base.ResolveReference(ref)
-			if abs.Scheme != "http" {
-				writeError(w, http.StatusForbidden, "Редирект на https",
-					fmt.Sprintf("сайт редиректит на %s — такие сайты уже на https, открывайте напрямую", abs))
+			if abs.Scheme != "http" && abs.Scheme != "https" {
+				writeError(w, http.StatusForbidden, "Редирект на другое",
+					fmt.Sprintf("сайт редиректит на %s — поддерживаются только http/https", abs))
 				return
 			}
 			resp.Header.Set("Location", "/go/"+abs.String())

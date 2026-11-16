@@ -7,7 +7,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"html"
 	"io"
 	"log"
 	"net"
@@ -222,6 +221,10 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 	if r.URL.RawQuery != "" {
 		target += "?" + r.URL.RawQuery
 	}
+	proxyTo(w, r, target)
+}
+
+func proxyTo(w http.ResponseWriter, r *http.Request, target string) {
 	up, err := parseTarget(target)
 	if err != nil {
 		writeError(w, http.StatusForbidden, "Сюда", err.Error())
@@ -345,22 +348,19 @@ func main() {
 		default:
 			// Корневые-относительные пути из JS/inline-скриптов страниц,
 			// отданных через /go/<цель> (например /cdn-cgi/challenge-platform… у Cloudflare).
-			// Сначала смотрим Referer (/go/<цель>/…), затем — cookie safe_target,
-			// которую браузер всегда носит после первой страницы через /go/.
+			// Сначала смотрим Referer (/go/<цель>/…), затем — cookie safe_target.
+			// Отдаём контент ЦЕЛИ по тому же пути БЕЗ редиректа — страница-инициатор
+			// ждёт скрипт ровно по /cdn-cgi/… на своём origin.
 			base, ok := targetBaseFromReferer(r.Header.Get("Referer"))
 			if !ok {
 				base, ok = targetBaseFromCookie(r)
 			}
 			if ok {
-				log.Printf("fallback: referer=%q base=%q path=%q", r.Header.Get("Referer"), base, p)
 				q := ""
 				if r.URL.RawQuery != "" {
 					q = "?" + r.URL.RawQuery
 				}
-				loc := "/go/" + base + p + q
-				w.Header().Set("Location", loc)
-				w.WriteHeader(http.StatusTemporaryRedirect)
-				fmt.Fprintf(w, `<a href="%s">Redirecting to %s</a>`, html.EscapeString(loc), html.EscapeString(loc))
+				proxyTo(w, r, base+p+q)
 				return
 			}
 			http.NotFound(w, r)

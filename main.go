@@ -85,29 +85,42 @@ func parseTarget(raw string) (*url.URL, error) {
 // ---------- клиент для исходящих запросов ----------
 
 func buildClient() *http.Client {
-	dialContext := func(ctx context.Context, network, addr string) (net.Conn, error) {
-		var base net.Conn
-		var err error
+	plainDial := func(ctx context.Context, network, addr string) (net.Conn, error) {
 		if proxyURL != "" {
-			base, err = socksDial(ctx, network, addr)
-		} else {
-			var d net.Dialer
-			base, err = d.DialContext(ctx, network, addr)
+			return socksDial(ctx, network, addr)
 		}
+		var d net.Dialer
+		return d.DialContext(ctx, network, addr)
+	}
+	chromeDialTLS := func(ctx context.Context, network, addr string) (net.Conn, error) {
+		base, err := plainDial(ctx, network, addr)
 		if err != nil {
 			return nil, err
 		}
-		// TLS делаем только для 443 (http:// идёт голым TCP)
 		host, port, splitErr := net.SplitHostPort(addr)
 		if splitErr != nil || port != "443" {
-			return base, nil
+			_ = base.Close()
+			return nil, fmt.Errorf("адрес %q: ожидается host:443", addr)
 		}
-		// Chrome-отпечаток ClientHello — иначе CF считает нас ботом
+		// Chrome ClientHello, ALPN строго http/1.1 (uTLS parrot форсит h2 — транспорт говорит HTTP/1.1).
+		spec, err := utls.UTLSIdToSpec(utls.HelloChrome_Auto)
+		if err != nil {
+			_ = base.Close()
+			return nil, err
+		}
+		for _, ext := range spec.Extensions {
+			if alpn, ok := ext.(*utls.ALPNExtension); ok {
+				alpn.AlpnProtocols = []string{"http/1.1"}
+			}
+		}
 		conn := utls.UClient(base, &utls.Config{
 			ServerName:         host,
-			NextProtos:         []string{"h2", "http/1.1"},
 			InsecureSkipVerify: false,
-		}, utls.HelloChrome_Auto)
+		}, utls.HelloCustom)
+		if err := conn.ApplyPreset(&spec); err != nil {
+			_ = base.Close()
+			return nil, err
+		}
 		if err := conn.HandshakeContext(ctx); err != nil {
 			_ = base.Close()
 			return nil, err
@@ -119,7 +132,8 @@ func buildClient() *http.Client {
 		ResponseHeaderTimeout: 20 * time.Second,
 		MaxIdleConns:          64,
 		IdleConnTimeout:       90 * time.Second,
-		DialContext:           dialContext,
+		DialContext:           plainDial,
+		DialTLSContext:        chromeDialTLS,
 	}
 	// dialContext уже настроен выше
 	return &http.Client{
